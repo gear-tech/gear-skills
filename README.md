@@ -28,7 +28,7 @@ To update later:
 Explain a PR, issue, commit, diff, file, or pasted code. Produces a TL;DR plus a walkthrough of the most important / hardest spots, each with a permalink and inline commentary in the language you choose.
 
 ```
-/gear-dev:explain <source> [--lang ru|en|…] [--deep]
+/gear-dev:explain <source> [--lang ru|en|…] [--depth low|middle|deep]
 ```
 
 **Source** can be any of:
@@ -43,16 +43,20 @@ Explain a PR, issue, commit, diff, file, or pasted code. Produces a TL;DR plus a
 
 **Flags:**
 
-- `--lang <code>` — prose language for the explanation. Default: `en`. Code, identifiers, file paths, and command examples always stay English.
-- `--deep` — walk through every significant change instead of capping at 2–5 key spots.
+- `--lang <code>` — prose language for the explanation. Default: `en`. All natural-language (headings, labels, prose, inline code commentary) is translated; only code identifiers, syntax, file paths, and command names stay in the source language.
+- `--depth <level>` — how much detail to produce. Default: `middle`.
+  - `low` — short overview: TL;DR + inventory + one walkthrough subsection for the single most important piece.
+  - `middle` — TL;DR + inventory + walkthrough of the main parts of the solution.
+  - `deep` — exhaustive walkthrough covering every significant change, including secondary subsystems and edge cases.
 
 **Examples:**
 
 ```
 /gear-dev:explain https://github.com/gear-tech/gear/pull/4321
 /gear-dev:explain gear-tech/gear#4321 --lang ru
-/gear-dev:explain master...HEAD
-/gear-dev:explain abc1234 --deep
+/gear-dev:explain gear-tech/gear#4321 --lang ru --depth low
+/gear-dev:explain master...HEAD --depth deep
+/gear-dev:explain abc1234 --depth deep
 /gear-dev:explain ./ethexe/processor/src/lib.rs --lang ru
 ```
 

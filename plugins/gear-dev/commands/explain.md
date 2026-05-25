@@ -1,6 +1,6 @@
 ---
-description: Explain a PR, issue, commit, diff, file, or pasted code — coherent narrative walkthrough that helps a reviewer understand the work, with heavy inline commentary and permalinks, fully localized to the requested language.
-argument-hint: <pr-url|issue-url|commit|range|file|"text"> [--lang ru|en|…] [--deep]
+description: Explain a PR, issue, commit, diff, file, or pasted code — coherent narrative walkthrough that helps a reviewer understand the work, with heavy inline commentary and permalinks, fully localized to the requested language. Depth is configurable.
+argument-hint: <pr-url|issue-url|commit|range|file|"text"> [--lang ru|en|…] [--depth low|middle|deep]
 ---
 
 # /explain
@@ -15,9 +15,21 @@ Parse them as:
 
 - **First non-flag token / quoted string / pasted block** → the **source** (required).
 - `--lang <code>` → output language (default: `en`). See "Language rules" below.
-- `--deep` → cover the full walkthrough exhaustively instead of focusing on the parts most useful to a reviewer.
+- `--depth <level>` → how much detail to produce. One of `low | middle | deep`. Default: `middle`. See "Depth modes" below.
 
 If `$ARGUMENTS` is empty or only flags, ask the user what to explain. Do not guess.
+
+If `--depth` is given an unknown value, fall back to `middle` and mention the fallback in one sentence at the top of the output.
+
+## Depth modes
+
+| Mode | What to produce |
+|---|---|
+| `low` | Concise overview. TL;DR + "What changed" inventory + a brief walkthrough focused only on the single most important piece of the solution. Skip secondary subsystems entirely. Target ~⅓ the length of `middle`. Good when the reviewer just needs to know what the PR does, not how every part works. |
+| `middle` *(default)* | TL;DR + inventory + walkthrough of the **main** parts of the solution with code and inline commentary for each. Skip trivial bits and secondary subsystems unless they're load-bearing for the main story. The standard reviewer-prep depth. |
+| `deep` | TL;DR + inventory + **exhaustive** walkthrough covering every significant change with full code and commentary, including secondary subsystems, edge cases, configuration/build implications, and subtle interactions. Use for handoffs, code archaeology, or thorough reviews. |
+
+Regardless of mode, "Possible issues" appears only when there are concrete findings.
 
 ## Step 1 — Detect the source
 
@@ -54,7 +66,13 @@ The reader should come away with a mental model of the whole change, with the tr
 
 ## Step 4 — Scope the walkthrough
 
-Cover everything important to the story. There is no hard cap on subsections — but stay focused on what helps a reviewer understand the work. With `--deep`, also cover every other significant change exhaustively. Without it, **skip** (mention briefly in the inventory, do not walk through):
+Scope is set by `--depth` (see "Depth modes" above):
+
+- **`low`** — one subsection for the single most important piece of the solution. Inventory is still complete, but the walkthrough is tight.
+- **`middle`** (default) — subsections for the main parts of the solution that a reviewer needs to understand. Secondary subsystems get a sentence in the inventory, not a subsection.
+- **`deep`** — exhaustive: every significant change gets a subsection, including secondary subsystems, edge cases, and notable config/build implications.
+
+In **every** mode, mention these briefly in the inventory but **never** walk through them:
 
 - Renames, moves, formatting changes.
 - Trivial one-liners and mechanical dependency bumps.
@@ -163,3 +181,4 @@ enumeration. Reference back to subsection 1 where relevant>
 - **Do not invent issues.** Empty "Possible issues" is fine.
 - **Do not restate the PR title.** TL;DR must add information the title alone does not convey.
 - **Ask when ambiguous.** If `#123` could resolve to multiple repos, or the source pattern is unclear, ask the user before fetching.
+- **Respect `--depth`.** Do not pad a `low` request with secondary subsections, and do not skimp on a `deep` request to keep output short. The user picked the level on purpose.
