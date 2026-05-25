@@ -1,0 +1,12 @@
+{
+  "name": "gear-dev",
+  "description": "Claude Code commands and skills for Gear Protocol development (Vara, ethexe)",
+  "version": "0.1.0",
+  "author": {
+    "name": "gear-tech"
+  },
+  "homepage": "https://github.com/gear-tech/gear-skills",
+  "repository": "https://github.com/gear-tech/gear-skills",
+  "license": "MIT",
+  "keywords": ["gear", "vara", "ethexe", "substrate", "wasm"]
+}
