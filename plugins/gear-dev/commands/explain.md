@@ -23,13 +23,17 @@ If `--depth` is given an unknown value, fall back to `middle` and mention the fa
 
 ## Depth modes
 
-| Mode | What to produce |
-|---|---|
-| `low` | Concise overview. TL;DR + "What changed" inventory + a brief walkthrough focused only on the single most important piece of the solution. Skip secondary subsystems entirely. Target ~⅓ the length of `middle`. Good when the reviewer just needs to know what the PR does, not how every part works. |
-| `middle` *(default)* | TL;DR + inventory + walkthrough of the **main** parts of the solution with code and inline commentary for each. Skip trivial bits and secondary subsystems unless they're load-bearing for the main story. The standard reviewer-prep depth. |
-| `deep` | TL;DR + inventory + **exhaustive** walkthrough covering every significant change with full code and commentary, including secondary subsystems, edge cases, configuration/build implications, and subtle interactions. Use for handoffs, code archaeology, or thorough reviews. |
+`--depth` controls both **scope** (what to cover) and **size** (hard length budgets). The budgets are caps, not aspirations — if you are about to exceed them, drop secondary code excerpts, fold sub-bullets into one line, and cut tangential prose.
+
+| Mode | Scope (what to cover) | Hard budget |
+|---|---|---|
+| `low` | The single most important piece of the solution. Skip everything else. Good when the reviewer just needs to know what the PR does, not how every part works. | TL;DR ≤ **5 sentences** (1 paragraph). Inventory ≤ **8 bullets total** across all buckets, **no sub-bullets**. Walkthrough = **1 subsection** with **exactly 1 code block ≤ 25 lines** (trim aggressively with `// ...`). Possible issues ≤ **2 items**. **Overall ≤ 100 rendered lines.** |
+| `middle` *(default)* | The main parts of the solution a reviewer needs to understand. Secondary subsystems get one line in the inventory, not a subsection. | TL;DR ≤ **8 sentences** (1–2 paragraphs). Inventory ≤ **12 bullets total**, ≤ **1 level of sub-bullets** per bucket. Walkthrough = **≤ 3 subsections**, each with **≤ 1 code block ≤ 40 lines**. Possible issues ≤ **4 items**. **Overall ≤ 300 rendered lines.** |
+| `deep` | Exhaustive: every significant change gets a subsection. Use for handoffs, code archaeology, or thorough reviews. | TL;DR as long as needed. Inventory full detail. Walkthrough subsections as many as needed; each subsection still **≤ 1 code block ≤ 60 lines** — if a function is longer, split it across multiple subsections or elide non-essential parts with `// ...`. Possible issues uncapped. No overall length cap. |
 
 Regardless of mode, "Possible issues" appears only when there are concrete findings.
+
+**Counting "rendered lines":** count visible markdown lines after rendering — headings, bullets, blank lines between paragraphs, and code lines all count. Use this as a self-check before emitting output; if you are over, trim before sending.
 
 ## Step 1 — Detect the source
 
@@ -66,11 +70,7 @@ The reader should come away with a mental model of the whole change, with the tr
 
 ## Step 4 — Scope the walkthrough
 
-Scope is set by `--depth` (see "Depth modes" above):
-
-- **`low`** — one subsection for the single most important piece of the solution. Inventory is still complete, but the walkthrough is tight.
-- **`middle`** (default) — subsections for the main parts of the solution that a reviewer needs to understand. Secondary subsystems get a sentence in the inventory, not a subsection.
-- **`deep`** — exhaustive: every significant change gets a subsection, including secondary subsystems, edge cases, and notable config/build implications.
+Scope and budgets are set by `--depth` — see the "Depth modes" table above. Treat the budgets as hard caps and self-check the output length before emitting.
 
 In **every** mode, mention these briefly in the inventory but **never** walk through them:
 
@@ -101,10 +101,11 @@ If something looks like a bug, broken invariant, unexplained decision, or missin
 
 If `--lang` is `en` or omitted, English everywhere.
 
-## Inline commentary — comment generously
+## Inline commentary — comment generously, but trim the code
 
 Every non-trivial code snippet must carry inline `// <commentary>` (or `# `, `//` per language) explaining **what** the code does and **why** at each interesting step. Aim for a comment density where a reader can follow the snippet from comments alone, without re-reading the surrounding prose.
 
+- **Trim aggressively.** Show only the slice that illustrates the point. For everything else, use `// ...` placeholders to elide. A 10-line trimmed snippet with dense commentary beats a 60-line full function with sparse commentary. The depth budgets enforce this — see "Depth modes".
 - Mark AI-added commentary clearly distinct in tone from original code comments. A reader should understand the snippet *as code* with your guidance layered in.
 - Translate both your added comments and any original source comments into the requested language.
 - Do not pad: every comment should add information not obvious from the line itself.
@@ -181,4 +182,4 @@ enumeration. Reference back to subsection 1 where relevant>
 - **Do not invent issues.** Empty "Possible issues" is fine.
 - **Do not restate the PR title.** TL;DR must add information the title alone does not convey.
 - **Ask when ambiguous.** If `#123` could resolve to multiple repos, or the source pattern is unclear, ask the user before fetching.
-- **Respect `--depth`.** Do not pad a `low` request with secondary subsections, and do not skimp on a `deep` request to keep output short. The user picked the level on purpose.
+- **Respect `--depth` budgets.** The per-mode hard caps in "Depth modes" are not aspirations. Self-check rendered length before emitting; if over, trim secondary excerpts and sub-bullets first. Do not pad a `low` request with secondary subsections, and do not skimp on a `deep` request to keep output short.

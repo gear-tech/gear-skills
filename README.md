@@ -44,10 +44,10 @@ Explain a PR, issue, commit, diff, file, or pasted code. Produces a TL;DR plus a
 **Flags:**
 
 - `--lang <code>` — prose language for the explanation. Default: `en`. All natural-language (headings, labels, prose, inline code commentary) is translated; only code identifiers, syntax, file paths, and command names stay in the source language.
-- `--depth <level>` — how much detail to produce. Default: `middle`.
-  - `low` — short overview: TL;DR + inventory + one walkthrough subsection for the single most important piece.
-  - `middle` — TL;DR + inventory + walkthrough of the main parts of the solution.
-  - `deep` — exhaustive walkthrough covering every significant change, including secondary subsystems and edge cases.
+- `--depth <level>` — how much detail to produce. Default: `middle`. Each level has hard length budgets so output stays predictable.
+  - `low` — short overview, **≤ 100 rendered lines**. TL;DR + tight inventory + one walkthrough subsection with a single trimmed code excerpt (≤ 25 lines) for the most important piece.
+  - `middle` — **≤ 300 rendered lines**. TL;DR + inventory + up to 3 walkthrough subsections, each with a single code excerpt (≤ 40 lines), covering the main parts of the solution.
+  - `deep` — no overall cap. Exhaustive walkthrough covering every significant change; individual code excerpts still capped at 60 lines (split across subsections or elide with `// ...` if longer).
 
 **Examples:**
 
