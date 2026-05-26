@@ -17,7 +17,15 @@ That's it. Commands become available as `/gear-dev:<name>` immediately, and the 
 
 ### Built-in preflight
 
-Every session start runs a quick preflight check that surfaces the status of the bundled MCP servers and tells you exactly what to install if anything is missing. Sample output:
+Every session start runs a quick preflight check that diagnoses the status of the bundled MCP servers' prerequisites. The diagnostic is injected into Claude's context — so when an MCP fails and you ask Claude about it, Claude already knows the cause and can tell you exactly what to install.
+
+To **see** the diagnostic yourself (it is not printed directly to the session transcript), run:
+
+```
+/gear-dev:doctor
+```
+
+Sample output:
 
 ```
 [gear-dev preflight]
@@ -26,9 +34,7 @@ Every session start runs a quick preflight check that surfaces the status of the
   ℹ first run in this workspace — rust-analyzer will index ~30–90s (Serena cold-start)
 ```
 
-If a prerequisite is missing (`uvx` for Serena, `node 18+` for repomix), the preflight prints a one-line install command. The plugin's commands and skills still work regardless — only the corresponding MCP server is degraded until you install the missing tool.
-
-The preflight is non-blocking and runs in under a second.
+If a prerequisite is missing (`uvx` for Serena, `node 18+` for repomix), the preflight prints a one-line install command. The plugin's slash commands still work regardless — only the corresponding MCP server is degraded until you install the missing tool. After installing a missing prereq, run `/reload-plugins` (or restart Claude Code) so the MCP server actually starts.
 
 ### Updates
 
@@ -50,6 +56,14 @@ When the plugin is enabled, these MCP servers start automatically. They merge wi
 To inspect what's running: `/mcp` shows status of all servers. To disable just the plugin's MCPs without removing the plugin itself, you can override them in your user-level `.mcp.json` (your config wins) or disable the plugin entirely with `/plugin disable gear-dev`.
 
 ### Commands
+
+#### `/gear-dev:doctor`
+
+Run the preflight diagnostic on demand and print the result to the session (the SessionStart hook only feeds Claude's context, not the user transcript). Use after install, or when an MCP server shows as failed in `/mcp`.
+
+```
+/gear-dev:doctor
+```
 
 #### `/gear-dev:explain`
 
@@ -99,6 +113,7 @@ gear-skills/
         ├── .claude-plugin/
         │   └── plugin.json           # plugin manifest (includes mcpServers)
         ├── commands/
+        │   ├── doctor.md             # /gear-dev:doctor
         │   └── explain.md            # /gear-dev:explain
         └── hooks/
             ├── hooks.json            # SessionStart hook config
