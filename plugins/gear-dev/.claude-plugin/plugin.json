@@ -1,7 +1,7 @@
 {
   "name": "gear-dev",
   "description": "Claude Code commands and skills for Gear Protocol development (Vara, ethexe). Bundles Serena (LSP-backed code intelligence) and repomix (on-demand repo flattener) MCP servers.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "author": {
     "name": "gear-tech"
   },
@@ -9,7 +9,6 @@
   "repository": "https://github.com/gear-tech/gear-skills",
   "license": "MIT",
   "keywords": ["gear", "vara", "ethexe", "substrate", "wasm"],
-  "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "serena": {
       "command": "uvx",
