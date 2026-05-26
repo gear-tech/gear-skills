@@ -57,10 +57,48 @@ To inspect what's running: `/mcp` shows status of all servers. To disable just t
 
 #### `/gear-dev:doctor`
 
-Run the preflight diagnostic on demand and print the result to the session (the SessionStart hook only feeds Claude's context, not the user transcript). Use after install, or when an MCP server shows as failed in `/mcp`.
+Print the bundled-MCP preflight diagnostic to the session. Use after install, or when an MCP server shows as failed in `/mcp`.
 
 ```
 /gear-dev:doctor
+```
+
+#### `/gear-dev:tester`
+
+Autonomous black-box tester for Rust crates and Solidity contracts. Iteratively generates corner-case tests for a chosen unit, runs them, and classifies failures via an evidence-backed rubric. With `--pr`, opens **draft** GitHub PRs for real bugs into the detected base branch.
+
+```
+/gear-dev:tester <target> [--count N=3] [--loop INTERVAL] [--pr]
+```
+
+**Target description** is free text, resolved deterministically:
+
+- `all` or `all rust crates` — every workspace member
+- `all crates with prefix ethexe` — name filter
+- `crate <name>` — a single workspace member
+- `<Name> contract` — a Solidity contract by file name under any detected Foundry root
+
+v1 supports **only** Rust crates and Solidity contracts. Other target types (function, module, library, CLI, bash, WASM) abort with a clear error.
+
+**Flags:**
+
+- `--count N` — tests to generate per iteration (default 3).
+- `--loop INTERVAL` — re-schedule the next iteration via `ScheduleWakeup` (e.g. `15m`, `1h`). The loop runs only while the current Claude Code session is open.
+- `--pr` — open **draft** PRs for real bugs, authored as your `gh`-authenticated user against the detected base branch. The user is printed at startup as a consent moment.
+
+**State** lives under `target/.gear-tester/` (relies on existing `target/` gitignore — the command never modifies `.gitignore`). Files: `ok.jsonl`, `failed.jsonl`, `dropped.jsonl`, `skipped.jsonl`, `contexts/<unit>.md`, `lock`, `cursor`.
+
+**Bug classification** requires concrete evidence (cited invariant `file:line`, math identity violation, panic on admissible input, or non-determinism across 3 re-runs). Otherwise the test is dropped as "test wrong" — no auto-PR of speculative bugs.
+
+**Architecture:** the main agent orchestrates; an `opus` sub-agent builds a per-unit context file once (lazy, cached); a `sonnet` sub-agent runs each iteration. This keeps the main context small across long loops.
+
+**Examples:**
+
+```
+/gear-dev:tester all rust crates --count 5 --loop 30m --pr
+/gear-dev:tester crate ethexe-consensus
+/gear-dev:tester crate ethexe-consensus --pr
+/gear-dev:tester Mirror contract --count 2
 ```
 
 #### `/gear-dev:explain`
@@ -112,7 +150,8 @@ gear-skills/
         │   └── plugin.json           # plugin manifest (includes mcpServers)
         ├── commands/
         │   ├── doctor.md             # /gear-dev:doctor
-        │   └── explain.md            # /gear-dev:explain
+        │   ├── explain.md            # /gear-dev:explain
+        │   └── tester.md             # /gear-dev:tester
         └── scripts/
             └── preflight.sh          # MCP prereq + rust-analyzer warmth check
                                       #   (invoked by /gear-dev:doctor)
