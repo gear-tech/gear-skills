@@ -15,7 +15,7 @@ Run the gear-dev plugin's preflight diagnostic and show the result to the user v
 
 1. Run the preflight script:
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/hooks/preflight.sh"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/preflight.sh"
    ```
    Where `${CLAUDE_PLUGIN_ROOT}` resolves to the gear-dev plugin's install path.
 

@@ -15,17 +15,15 @@ In any Claude Code session:
 
 That's it. Commands become available as `/gear-dev:<name>` immediately, and the bundled MCP servers (Serena, repomix) auto-register and start on session start.
 
-### Built-in preflight
+### Verifying setup
 
-Every session start runs a quick preflight check that diagnoses the status of the bundled MCP servers' prerequisites. The diagnostic is injected into Claude's context — so when an MCP fails and you ask Claude about it, Claude already knows the cause and can tell you exactly what to install.
-
-To **see** the diagnostic yourself (it is not printed directly to the session transcript), run:
+To check the status of the bundled MCP servers' prerequisites (`uvx` for Serena, `node 18+` for repomix), run:
 
 ```
 /gear-dev:doctor
 ```
 
-Sample output:
+Sample output when all good:
 
 ```
 [gear-dev preflight]
@@ -34,7 +32,7 @@ Sample output:
   ℹ first run in this workspace — rust-analyzer will index ~30–90s (Serena cold-start)
 ```
 
-If a prerequisite is missing (`uvx` for Serena, `node 18+` for repomix), the preflight prints a one-line install command. The plugin's slash commands still work regardless — only the corresponding MCP server is degraded until you install the missing tool. After installing a missing prereq, run `/reload-plugins` (or restart Claude Code) so the MCP server actually starts.
+If a prerequisite is missing, the diagnostic prints a one-line install command. The plugin's slash commands still work regardless — only the corresponding MCP server is degraded until you install the missing tool. After installing a missing prereq, **restart Claude Code** so the MCP server picks up the new `PATH`.
 
 ### Updates
 
@@ -115,9 +113,9 @@ gear-skills/
         ├── commands/
         │   ├── doctor.md             # /gear-dev:doctor
         │   └── explain.md            # /gear-dev:explain
-        └── hooks/
-            ├── hooks.json            # SessionStart hook config
+        └── scripts/
             └── preflight.sh          # MCP prereq + rust-analyzer warmth check
+                                      #   (invoked by /gear-dev:doctor)
 ```
 
 ## Contributing
