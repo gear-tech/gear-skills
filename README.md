@@ -2,7 +2,19 @@
 
 Claude Code plugin marketplace for **Gear Protocol** development (Vara, ethexe).
 
-This repository hosts the `gear-dev` plugin — a collection of slash commands and skills that help engineers working in [gear-tech/gear](https://github.com/gear-tech/gear) and related repos move faster with Claude Code.
+This repository hosts the `gear-dev` plugin — a collection of slash commands, skills, and MCP servers that help engineers working in [gear-tech/gear](https://github.com/gear-tech/gear) and related repos move faster with Claude Code.
+
+## Prerequisites
+
+Install once on your machine — these are needed by the MCP servers the plugin auto-registers:
+
+- **[uv / uvx](https://docs.astral.sh/uv/)** (for Serena MCP):
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- **Node 18+** (for repomix MCP) — usually already installed; check with `node --version`.
+
+If either is missing, the corresponding MCP server will fail to start and you'll see an error in `/mcp` — the rest of the plugin (commands, skills) still works.
 
 ## Install
 
@@ -13,7 +25,9 @@ In any Claude Code session:
 /plugin install gear-dev@gear-skills
 ```
 
-That is it — commands become available as `/gear-dev:<name>` immediately.
+That's it. Commands become available as `/gear-dev:<name>` immediately, and the bundled MCP servers (Serena, repomix) auto-register and start on session start.
+
+**First-run note:** Serena spins up `rust-analyzer` for the workspace. On the gear repo (~114 crates), expect 30–90s for the initial index. Subsequent sessions reuse the warm cache.
 
 To update later:
 
@@ -23,7 +37,20 @@ To update later:
 
 ## What's included
 
-### `/gear-dev:explain`
+### Bundled MCP servers (auto-registered)
+
+When the plugin is enabled, these MCP servers start automatically. They merge with your existing `.mcp.json` — if you already have a server named `serena` or `repomix` configured locally, your version wins.
+
+| Server | Purpose | Source |
+|---|---|---|
+| **`serena`** | LSP-backed code intelligence over the current workspace: `find_definition`, `find_references`, `get_symbols_overview`. Uses `rust-analyzer` under the hood, so it understands proc-macros (e.g. `construct_runtime!`, `pallet::call`) correctly. | [oraios/serena](https://github.com/oraios/serena) via `uvx` |
+| **`repomix`** | On-demand flattening of a directory (or whole workspace) into a single token-efficient blob — useful when an agent genuinely needs a whole crate at once rather than navigating symbol-by-symbol. | [yamadashy/repomix](https://github.com/yamadashy/repomix) via `npx` |
+
+To inspect what's running: `/mcp` shows status of all servers. To disable just the plugin's MCPs without removing the plugin itself, you can override them in your user-level `.mcp.json` (your config wins) or disable the plugin entirely with `/plugin disable gear-dev`.
+
+### Commands
+
+#### `/gear-dev:explain`
 
 Explain a PR, issue, commit, diff, file, or pasted code. Produces a TL;DR plus a walkthrough of the most important / hardest spots, each with a permalink and inline commentary in the language you choose.
 
@@ -69,7 +96,7 @@ gear-skills/
 └── plugins/
     └── gear-dev/
         ├── .claude-plugin/
-        │   └── plugin.json           # plugin manifest
+        │   └── plugin.json           # plugin manifest (includes mcpServers)
         └── commands/
             └── explain.md            # /gear-dev:explain
 ```

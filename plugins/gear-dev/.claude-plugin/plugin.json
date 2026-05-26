@@ -1,12 +1,30 @@
 {
   "name": "gear-dev",
-  "description": "Claude Code commands and skills for Gear Protocol development (Vara, ethexe)",
-  "version": "0.4.0",
+  "description": "Claude Code commands and skills for Gear Protocol development (Vara, ethexe). Bundles Serena (LSP-backed code intelligence) and repomix (on-demand repo flattener) MCP servers.",
+  "version": "0.5.0",
   "author": {
     "name": "gear-tech"
   },
   "homepage": "https://github.com/gear-tech/gear-skills",
   "repository": "https://github.com/gear-tech/gear-skills",
   "license": "MIT",
-  "keywords": ["gear", "vara", "ethexe", "substrate", "wasm"]
+  "keywords": ["gear", "vara", "ethexe", "substrate", "wasm"],
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "claude-code",
+        "--project-from-cwd"
+      ]
+    },
+    "repomix": {
+      "command": "npx",
+      "args": ["-y", "repomix@latest", "--mcp"]
+    }
+  }
 }
