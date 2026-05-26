@@ -9,7 +9,7 @@
       "name": "gear-dev",
       "source": "./plugins/gear-dev",
       "description": "Commands and skills for Gear Protocol development (Vara, ethexe)",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "category": "development",
       "keywords": ["gear", "vara", "ethexe", "substrate", "wasm"],
       "homepage": "https://github.com/gear-tech/gear-skills",

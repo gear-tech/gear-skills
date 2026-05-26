@@ -4,18 +4,6 @@ Claude Code plugin marketplace for **Gear Protocol** development (Vara, ethexe).
 
 This repository hosts the `gear-dev` plugin — a collection of slash commands, skills, and MCP servers that help engineers working in [gear-tech/gear](https://github.com/gear-tech/gear) and related repos move faster with Claude Code.
 
-## Prerequisites
-
-Install once on your machine — these are needed by the MCP servers the plugin auto-registers:
-
-- **[uv / uvx](https://docs.astral.sh/uv/)** (for Serena MCP):
-  ```bash
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  ```
-- **Node 18+** (for repomix MCP) — usually already installed; check with `node --version`.
-
-If either is missing, the corresponding MCP server will fail to start and you'll see an error in `/mcp` — the rest of the plugin (commands, skills) still works.
-
 ## Install
 
 In any Claude Code session:
@@ -27,9 +15,22 @@ In any Claude Code session:
 
 That's it. Commands become available as `/gear-dev:<name>` immediately, and the bundled MCP servers (Serena, repomix) auto-register and start on session start.
 
-**First-run note:** Serena spins up `rust-analyzer` for the workspace. On the gear repo (~114 crates), expect 30–90s for the initial index. Subsequent sessions reuse the warm cache.
+### Built-in preflight
 
-To update later:
+Every session start runs a quick preflight check that surfaces the status of the bundled MCP servers and tells you exactly what to install if anything is missing. Sample output:
+
+```
+[gear-dev preflight]
+  ✓ uvx 0.4.18 (Serena MCP ready)
+  ✓ node v20.10.0 (repomix MCP ready)
+  ℹ first run in this workspace — rust-analyzer will index ~30–90s (Serena cold-start)
+```
+
+If a prerequisite is missing (`uvx` for Serena, `node 18+` for repomix), the preflight prints a one-line install command. The plugin's commands and skills still work regardless — only the corresponding MCP server is degraded until you install the missing tool.
+
+The preflight is non-blocking and runs in under a second.
+
+### Updates
 
 ```
 /plugin marketplace update gear-skills
@@ -97,8 +98,11 @@ gear-skills/
     └── gear-dev/
         ├── .claude-plugin/
         │   └── plugin.json           # plugin manifest (includes mcpServers)
-        └── commands/
-            └── explain.md            # /gear-dev:explain
+        ├── commands/
+        │   └── explain.md            # /gear-dev:explain
+        └── hooks/
+            ├── hooks.json            # SessionStart hook config
+            └── preflight.sh          # MCP prereq + rust-analyzer warmth check
 ```
 
 ## Contributing

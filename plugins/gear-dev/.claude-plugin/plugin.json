@@ -1,7 +1,7 @@
 {
   "name": "gear-dev",
   "description": "Claude Code commands and skills for Gear Protocol development (Vara, ethexe). Bundles Serena (LSP-backed code intelligence) and repomix (on-demand repo flattener) MCP servers.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": {
     "name": "gear-tech"
   },
