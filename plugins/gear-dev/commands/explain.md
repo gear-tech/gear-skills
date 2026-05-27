@@ -112,7 +112,7 @@ Every non-trivial code snippet must carry inline `// <commentary>` (or `# `, `//
 
 ## Output format
 
-Use natural-language conventions of the target language for headings. Below is the structure with Russian labels shown as an example when `--lang ru`; for English, use the natural English equivalents (`## What changed`, `## Walkthrough`, `## Possible issues`).
+Use natural-language conventions of the target language for headings. The template below shows English; for `--lang <code>`, translate every heading, label, bullet prefix, prose line, and code comment to that language while keeping identifiers, paths, and syntax intact.
 
 ```markdown
 ## TL;DR
@@ -121,24 +121,24 @@ Use natural-language conventions of the target language for headings. Below is t
 intent, and any context the reviewer needs (e.g. "marked do-not-merge, waiting
 for X"). Adds information beyond the PR title.>
 
-## Что изменилось                           ← localized heading
+## What changed                             ← translate heading to --lang
 
-- **Добавлено:** …                         ← localized labels
-- **Изменено:** …
-- **Удалено:** …
-- **Рефакторинг:** …
-- **Конфиг/сборка:** …
+- **Added:** …                              ← translate labels to --lang
+- **Changed:** …
+- **Removed:** …
+- **Refactor:** …
+- **Config/build:** …
 
 (Omit empty buckets. Be specific about files and areas, not vague.)
 
-## Разбор                                   ← localized; this is the narrative
+## Walkthrough                              ← translate; this is the narrative
 
 <Connected prose telling the story of the change. Break into ### subsections
 by sub-topic of the solution (not by "spot N"). Each subsection explains a
 piece of the solution and how it fits the whole, embedding code as evidence
 with heavy inline commentary.>
 
-### <Подзаголовок 1: имя подсистемы или этапа решения>
+### <Subheading 1: subsystem name or step in the solution>
 
 <2–5 sentences setting up what this part of the change does and why it matters
 to the overall story.>
@@ -146,11 +146,11 @@ to the overall story.>
 [`path/to/file.rs:L42-L58`](https://github.com/<owner>/<repo>/blob/<sha>/path/to/file.rs#L42-L58)
 
 ```rust
-// <translated commentary: что делает функция и зачем она здесь>
+// <translated commentary: what the function does and why it lives here>
 fn handle_request(req: Request) -> Result<Response> {
-    // <translated original comment, либо AI-комментарий: почему именно validate, а не parse>
+    // <translated original comment, or AI commentary: why validate rather than parse>
     let parsed = validate(&req)?;
-    // <inline note: тут происходит дорогая операция, поэтому кэш ниже>
+    // <inline note: this is the expensive call, hence the cache below>
     let cached = CACHE.get_or_init(|| build_cache());
     cached.lookup(parsed)
 }
@@ -159,14 +159,14 @@ fn handle_request(req: Request) -> Result<Response> {
 <continuation of the narrative — how the code above accomplishes the goal,
 what to watch out for, and how it connects to the next subsection>
 
-### <Подзаголовок 2: следующая часть истории>
+### <Subheading 2: the next beat of the story>
 
 <flows from the previous section as the next beat of the story, not a fresh
 enumeration. Reference back to subsection 1 where relevant>
 
 …
 
-## ⚠️ Возможные проблемы                    ← only when concrete
+## ⚠️ Possible issues                       ← translate; only when concrete
 
 (Tie each item to specific lines.)
 
