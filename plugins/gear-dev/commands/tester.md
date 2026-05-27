@@ -18,6 +18,26 @@ Parse `$ARGUMENTS` as:
 
 If `$ARGUMENTS` is empty → ask the user what to test. Do not guess.
 
+## On wakeup (loop mode) — context discipline for the main agent
+
+**This is the highest-priority instruction in this skill.** Every cache-read token paid by the main agent on wakeup is paid for every subsequent iteration too. Sloppy reads here multiply across the entire loop.
+
+When `ScheduleWakeup` re-fires this skill, the orchestrator (the main Claude session, NOT a sub-agent) MUST:
+
+**READ:**
+- `target/.gear-tester/cursor` (≤ 10 bytes — integer position in the t-list)
+- `target/.gear-tester/SESSION_NOTES.md` (≤ 50 lines — rolling log of prior iterations)
+- `target/.gear-tester/workspace_map.tsv` (only if the next unit is a Rust crate — to resolve `$CD_PREFIX`)
+
+**MUST NOT READ:**
+- `ok.jsonl`, `failed.jsonl`, `dropped.jsonl`, `compile_failed.jsonl` — these are large append-only logs consumed by **sonnet sub-agents** for hash dedup, not by the orchestrator. The orchestrator's only interactions with them are appends.
+- `contexts/<unit>.md` — consumed by sonnet sub-agents in Step 5 and by the opus-verifier in Step 6. The orchestrator never inspects them directly.
+- The transcript of previous iterations (prior `Agent`-tool outputs, prior bash command outputs). They are out of date — the source of truth is the files on disk. Information needed across iterations lives in `SESSION_NOTES.md`.
+
+**ON WAKEUP, the orchestrator's job is to:** acquire the lock, advance the cursor, spawn the right sub-agents, parse their JSON outputs, write outcomes to disk, write one line to `SESSION_NOTES.md`, schedule the next wakeup, release the lock. That is all. Every step is short. Every step writes more than it reads.
+
+If the orchestrator catches itself about to `Read` a jsonl file or re-inspect a previous sub-agent output: STOP. The information is either in `SESSION_NOTES.md` or it is not needed.
+
 ## Scope v1 (hard cap)
 
 Only these target types are supported:
@@ -44,6 +64,7 @@ Files:
 | `skipped.jsonl` | Units skipped per iteration with reason |
 | `lock` | flock-based iteration lock |
 | `cursor` | Round-robin position in t-list |
+| `SESSION_NOTES.md` | Rolling log: one line per iteration. The ONLY file the orchestrator reads on wakeup (besides `cursor` and `workspace_map.tsv`). Rotates at 50 lines. |
 
 ## Workflow
 
@@ -261,9 +282,30 @@ Which other crates/contracts this unit relies on (1 line each).
 
 Do not include implementation reasoning, hypothetical bugs, or suggestions.
 This is reference material for a separate test-writing agent.
+
+## Output handling
+
+Write the full context content DIRECTLY to:
+    target/.gear-tester/contexts/<unit>.md
+
+Then your FINAL text response (returned to the orchestrator) must be
+EXACTLY this JSON object, nothing else:
+
+{
+  "status": "ok" | "error",
+  "context_file": "target/.gear-tester/contexts/<unit>.md",
+  "bytes": <integer>,
+  "sections_present": ["Public API","State assumptions and lifecycle",
+                       "Documented invariants","Existing tests",
+                       "Known dependencies"],
+  "error": "<one line, only if status=error>"
+}
+
+The orchestrator never reads your prose response — only the JSON. Do not
+echo the context content back in your response; it is already on disk.
 ````
 
-Save the agent's text output to `target/.gear-tester/contexts/<unit>.md`.
+The opus sub-agent writes the context file itself. The orchestrator only verifies it exists and is non-empty after the agent returns.
 
 #### Step 5: Run iteration (sonnet sub-agent)
 
@@ -362,10 +404,21 @@ file, .gitignore, or any file outside `tests/auto_tester_*.rs` (Rust) or
 `test/AutoTester_*.t.sol` (Solidity). The orchestrator owns all cleanup
 and quarantine setup.
 
-## Return value
+## Return value — JSON ONLY
 
-Emit a single JSON object as the FINAL LINE of your output (so the orchestrator
-can parse it):
+Your FINAL text response (what the orchestrator sees) must be EXACTLY ONE
+JSON object and nothing else. No preamble. No "Here's the result:". No
+markdown fences. No progress narration. No cargo output. Just the JSON.
+
+The orchestrator parses your response with `jq .` — if it has any
+non-JSON content the iteration aborts.
+
+DO NOT include test source code in the JSON. The test file is on disk
+at `<test_path>`; the orchestrator reads it directly when it needs the
+source (for bug PRs or failed.jsonl). Inlining ~100 lines of test source
+× <count> tests × every iteration is the dominant cost of the loop.
+
+Output schema:
 
 {
   "iteration_summary": "<one line>",
@@ -395,7 +448,7 @@ DO NOT open PRs, switch branches, modify git state, or modify Cargo.toml.
 That is the orchestrator's job.
 ````
 
-After sonnet returns, parse the JSON object from the **last line** of its output.
+After sonnet returns, parse the JSON object from its response with `jq .`. The response should be JSON-only; if there is any preamble, take the longest trailing balanced `{...}` block.
 
 #### Step 6: Verify compile errors (opus-verifier sub-agent)
 
@@ -442,7 +495,9 @@ Decide exactly one of three verdicts:
    This is a potential API design bug worth keeping as a quarantined
    test for human review.
 
-Output STRICTLY this JSON on the LAST LINE:
+Your FINAL text response (returned to the orchestrator) must be EXACTLY
+this JSON object, nothing else. No preamble, no narrative, no markdown
+fences:
 
 {
   "verdict": "test_wrong" | "context_wrong" | "api_gap",
@@ -623,7 +678,28 @@ This step OWNS the working-tree-clean guarantee — it does not rely on sub-agen
    Without `--pr`: `$STATUS` must be empty. If not → abort with `git status --porcelain` output as diagnostic (this is a tester bug; should not happen).
    With `--pr` after quarantine: `$STATUS` may show the modified `Cargo.toml` and untracked quarantined tests; these are intentional (quarantine lives in the working tree). They are tracked in `compile_failed.jsonl` for next-iteration reconciliation.
 
-#### Step 11: Release lock
+#### Step 11: Update SESSION_NOTES.md
+
+Append ONE line to `target/.gear-tester/SESSION_NOTES.md` in this exact format:
+
+```
+iter=<N> ts=<ISO8601> unit=<unit> pass=<n> bug=<n> drop=<n> quarantine=<n> ctx_built=<bool> dur=<seconds>s
+```
+
+Where:
+- `iter` = the cursor value at the start of this iteration
+- `ctx_built` = `true` if Step 4 spawned the opus context builder this iteration, `false` if cached
+- `dur` = total iteration wall-clock (lock-acquire → here)
+
+After append, **rotate** the file: keep only the last 50 lines.
+```bash
+tail -n 50 target/.gear-tester/SESSION_NOTES.md > target/.gear-tester/SESSION_NOTES.md.tmp
+mv target/.gear-tester/SESSION_NOTES.md.tmp target/.gear-tester/SESSION_NOTES.md
+```
+
+This file is THE handoff between iterations. The next wakeup reads only this file (plus `cursor` and `workspace_map.tsv`). No other state is consulted.
+
+#### Step 12: Release lock
 
 ```bash
 flock -u 200
@@ -631,7 +707,7 @@ exec 200>&-
 rm -f target/.gear-tester/lock
 ```
 
-#### Step 12: Schedule next iteration
+#### Step 13: Schedule next iteration
 
 If `--loop` set → call `ScheduleWakeup` as described in Phase 2. Otherwise exit.
 
@@ -655,6 +731,8 @@ Same hash → already tested or dropped → sonnet must skip. Dedup pool is the 
 - **Workspace cd is mandatory.** Every cargo/forge invocation in a sub-agent's prompt is prefixed with the resolved `$CD_PREFIX` for the unit's workspace. Sub-agents that run cargo from the wrong directory get "package not found".
 - **Lib-presence pre-check is mandatory** for Rust units. Skip binary-only / WASM-only crates before spawning the opus context builder (saves $5–10 per skipped crate).
 - **Orchestrator owns test cleanup.** Sub-agents leave all files on disk; the orchestrator's Step 10 enumerates and removes them based on the keep-list. Don't trust sub-agents to clean up after themselves.
+- **Sub-agents return JSON only.** Every sub-agent (opus context builder, sonnet iteration, opus compile-error verifier) writes large artifacts to disk and returns ONLY a small JSON object summarizing the result. Inlining test source, context content, or cargo output in the response wastes ~1k–5k tokens per sub-agent call × ~3 calls per iteration × every iteration × cache-read multiplier.
+- **Orchestrator reads only what it must on wakeup.** `cursor`, `SESSION_NOTES.md` (≤ 50 lines), `workspace_map.tsv`. Never re-read jsonl files or prior sub-agent outputs. See "On wakeup" at the top of this skill.
 
 ## Failure modes
 
