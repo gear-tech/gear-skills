@@ -28,6 +28,7 @@ When `ScheduleWakeup` re-fires this skill, the orchestrator (the main Claude ses
 - `target/.gear-tester/cursor` (≤ 10 bytes — integer position in the t-list)
 - `target/.gear-tester/SESSION_NOTES.md` (≤ 50 lines — rolling log of prior iterations)
 - `target/.gear-tester/workspace_map.tsv` (only if the next unit is a Rust crate — to resolve `$CD_PREFIX`)
+- `target/.gear-tester/saturation.json` (small dict — used by Step 2 to skip deprioritized units)
 
 **MUST NOT READ:**
 - `ok.jsonl`, `failed.jsonl`, `dropped.jsonl`, `compile_failed.jsonl` — these are large append-only logs consumed by **sonnet sub-agents** for hash dedup, not by the orchestrator. The orchestrator's only interactions with them are appends.
@@ -64,7 +65,8 @@ Files:
 | `skipped.jsonl` | Units skipped per iteration with reason |
 | `lock` | flock-based iteration lock |
 | `cursor` | Round-robin position in t-list |
-| `SESSION_NOTES.md` | Rolling log: one line per iteration. The ONLY file the orchestrator reads on wakeup (besides `cursor` and `workspace_map.tsv`). Rotates at 50 lines. |
+| `SESSION_NOTES.md` | Rolling log: one line per iteration. The ONLY file the orchestrator reads on wakeup (besides `cursor`, `workspace_map.tsv`, `saturation.json`). Rotates at 50 lines. |
+| `saturation.json` | Per-unit counters used by the cursor advance to deprioritize crates with K=3 consecutive no-bug iterations. Map `{unit: {iters, bugs, consecutive_no_bugs, deprioritized}}`. |
 
 ## Workflow
 
@@ -181,11 +183,39 @@ echo "$$ $(date +%s)" > target/.gear-tester/lock
 
 Stale lock: if the PID stored in `lock` is not alive (`kill -0 <pid>` fails) **and** the timestamp is > 1800s old, force-break by removing and re-acquiring. Print a warning.
 
-#### Step 2: Pick next unit
+#### Step 2: Pick next unit (with saturation policy)
 
-Read `target/.gear-tester/cursor` (default `0`). Unit = `t-list[cursor % len(t-list)]`. Increment cursor, write back.
+Read `target/.gear-tester/cursor` (default `0`) and `target/.gear-tester/saturation.json` (default `{}`).
 
-Skip units where `ok.jsonl + failed.jsonl + dropped.jsonl + compile_failed.jsonl` already have ≥ 15 entries for this unit (per-unit budget exhaustion). If all units are budget-exhausted → exit with `all units saturated; increase --count or extend scope`.
+**Saturation policy.** A unit is **deprioritized** after 3 consecutive iterations on it produce zero bugs (no `failed.jsonl` and no `compile_failed.jsonl` entries). Deprioritized units are skipped during cursor advance until ALL t-list units are deprioritized, at which point the deprioritization is cleared for everyone (a fresh round begins). With `--pr` raise the threshold to 5 (bugs harder to find when each is a draft PR).
+
+```
+load sat = json.load(saturation.json or {})
+
+# Cursor advance with skip
+for attempt in 0..len(t-list):
+    candidate = t-list[(cursor + attempt) % len(t-list)]
+    if sat.get(candidate, {}).get("deprioritized") and \
+       not all(sat.get(u, {}).get("deprioritized") for u in t-list):
+        continue
+    unit = candidate
+    cursor_new = (cursor + attempt + 1) % len(t-list)
+    break
+
+# All deprioritized → reset and pick t-list[cursor]
+if no unit picked:
+    for u in t-list:
+        sat.setdefault(u, {})["deprioritized"] = False
+        sat[u]["consecutive_no_bugs"] = 0
+    unit = t-list[cursor % len(t-list)]
+    cursor_new = (cursor + 1) % len(t-list)
+
+write cursor_new
+```
+
+Also still respect the hard per-unit cap: skip units where `ok.jsonl + failed.jsonl + dropped.jsonl + compile_failed.jsonl` already have ≥ 15 entries for this unit. If all units are at the hard cap → exit with `all units saturated; increase --count or extend scope`.
+
+The saturation file itself is updated in Step 11 (after iteration outcomes are known).
 
 #### Step 3: Per-target tooling + lib presence + workspace resolution
 
@@ -236,11 +266,21 @@ If `target/.gear-tester/contexts/<unit>.md` does **not** exist, invoke the `Agen
 - `subagent_type`: `general-purpose`
 - `model`: `opus`
 - `description`: `Build tester context for <unit>`
-- `prompt` (template, with substitutions):
+- `prompt` (template, with substitutions). The prompt includes a HARD budget cap (max 15 tool calls, max 5 minutes wall-clock) — context builds for crates with hundreds of public items in the post-mortem cost $20–$30 each because no cap was enforced:
 
 ````
 Produce a dense knowledge file for <type> "<unit>" in this repository, to be
 consumed by an autonomous tester. Output MARKDOWN, max 3000 words.
+
+HARD BUDGET:
+- Max 15 tool calls (Read, Grep, Glob, Bash combined).
+- Max 5 minutes wall-clock.
+
+If you hit either cap before producing all sections, write what you have to
+the output file with a `## partial-context-warning` section at the top listing
+which sections are incomplete. Do not exceed the cap to "finish properly" —
+the orchestrator can re-run on a future iteration if the partial context
+proves insufficient.
 
 Workspace cd prefix for this unit (use it for any cargo invocations you make):
 <CD_PREFIX>
@@ -384,6 +424,23 @@ with concrete evidence cited inline:
 (c) Panics/aborts/reverts on an input the API explicitly admits as valid.
     Evidence: cite the signature accepting that input type + the
     panic/abort/revert message.
+
+    **Policy on `unimplemented!()`, `todo!()`, `unreachable!()`:** these
+    are equivalent to `panic!()` from the caller's runtime perspective —
+    the program aborts. Treat them as rubric (c) bugs whenever they are
+    reachable from a `pub` function/method WITHOUT `unsafe` and WITHOUT
+    an opt-in unstable-feature flag. The "I'll implement this later"
+    intent does not protect callers who reach the call site through the
+    advertised public API.
+
+    Exceptions (drop, not bug):
+    - The function requires `unsafe` to invoke (caller accepted UB
+      contract).
+    - The function is behind a non-default cargo feature the caller had
+      to explicitly enable.
+    - There is a `///` doc-comment on the function explicitly saying
+      "this is not implemented and will panic; use X instead". Cite the
+      doc-comment as evidence of intent.
 (d) Produces non-deterministic output on identical input across 3 re-runs.
     Evidence: the 3 differing output values.
 
@@ -562,6 +619,62 @@ auto_tester_quarantine = []
 
 **Note on Cargo.toml modification.** This is the ONLY file outside `tests/auto_tester_*.rs` that the orchestrator is permitted to modify, and only to add the `auto_tester_quarantine` feature once per crate. The diff is left in the working tree alongside the quarantined test files. Without `--pr` it is reverted by Step 11. With `--pr` it is committed onto the PR branch alongside the test.
 
+#### Step 7.5: Verify bug rubric (orchestrator-side, mandatory)
+
+For EVERY test with `outcome: "bug"` in sonnet's response, before recording it as a real bug, the orchestrator MUST verify each `rubric_items` entry. Anything that fails verification gets downgraded to `outcome: "test_wrong"` and dropped.
+
+**Verification per rubric id:**
+
+**(a) Documented invariant** — most-cited rubric, most-false-positive-prone (sonnet has been observed quoting prose from the context file rather than real source comments).
+
+For each `rubric_items` entry with `id: "a"`:
+1. Read `cite_text`, `cite_file`, `cite_line` from sonnet's response.
+2. Open `<REPO_ROOT>/<cite_file>` and read line `<cite_line>` ± 5 lines for context.
+3. Normalize whitespace on both sides (collapse runs of spaces/tabs/newlines to single space).
+4. `grep -F` the normalized `cite_text` in the normalized window. Not found → downgrade.
+5. The matching line MUST be a comment: regex `^\s*(///|//!|//|\*|/\*)`. If the line is real code → downgrade.
+6. Both checks pass → rubric (a) accepted.
+
+Downgrade reason: `unverified_evidence: rubric (a) citation "<text>" not found at <file>:<line>` or `... not in a comment`.
+
+**(b) Math identity** — sonnet must have provided `input → expected → observed`.
+
+If the response is missing any of the three values, or all three are equal → downgrade with reason `rubric_b_incomplete_or_identity_holds`.
+
+**(c) Panic on valid input** — sonnet must have provided a panic message AND cited the public signature.
+
+Verify:
+1. `panic_message` field is non-empty.
+2. Some reasonable substring of the signature appears in source. (Soft check; do not be aggressive — many APIs match.)
+
+If `unimplemented!()`/`todo!()`/`unreachable!()` appears in the panic message, follow the policy in the rubric (Step 5) — it stays a bug unless one of the documented exceptions applies. The orchestrator does not auto-apply exceptions; sonnet must have considered them when classifying.
+
+**(d) Non-determinism** — sonnet must have provided 3 differing observed values.
+
+Verify the response contains a list of ≥ 3 values with ≥ 2 distinct ones. Otherwise downgrade `rubric_d_not_diverse`.
+
+**Reproducibility re-runs (after rubric checks pass, before recording).**
+
+For each surviving bug, re-run the test 3 times:
+```bash
+for i in 1 2 3; do
+  eval "$CD_PREFIX cargo nextest run -p $UNIT --test auto_tester_$HASH" 2>&1 \
+    | tail -n 5 > "/tmp/auto_tester_${HASH}_run_${i}.log"
+  echo $? >> "/tmp/auto_tester_${HASH}_exits"
+done
+```
+
+Interpret:
+- For rubric (a), (b), (c): all 3 re-runs must fail the same way. Any pass → downgrade `flaky_was_one_of_three_passes`.
+- For rubric (d): all 3 re-runs must produce a distinct value from each other AND from sonnet's original observation. All same → downgrade `flaky_was_actually_deterministic`.
+
+**Downgrade path.** Bugs that fail verification:
+1. Delete the test file (no api_gap quarantine — that's only for compile errors).
+2. Append to `dropped.jsonl` with `reason: "rubric_verification_failed: <specific>"`.
+3. The orchestrator's bug count for this iteration drops by one (affects saturation counter in Step 11).
+
+This step takes ~1–3 minutes per bug candidate (3 cargo runs × ~30s). Bugs are rare (2 / 71 in the post-mortem session), so the amortized overhead is small.
+
 #### Step 8: Handle outcomes (main agent)
 
 For each test in sonnet's `tests` array:
@@ -678,9 +791,9 @@ This step OWNS the working-tree-clean guarantee — it does not rely on sub-agen
    Without `--pr`: `$STATUS` must be empty. If not → abort with `git status --porcelain` output as diagnostic (this is a tester bug; should not happen).
    With `--pr` after quarantine: `$STATUS` may show the modified `Cargo.toml` and untracked quarantined tests; these are intentional (quarantine lives in the working tree). They are tracked in `compile_failed.jsonl` for next-iteration reconciliation.
 
-#### Step 11: Update SESSION_NOTES.md
+#### Step 11: Update SESSION_NOTES.md and saturation.json
 
-Append ONE line to `target/.gear-tester/SESSION_NOTES.md` in this exact format:
+**SESSION_NOTES.md** — append ONE line in this exact format:
 
 ```
 iter=<N> ts=<ISO8601> unit=<unit> pass=<n> bug=<n> drop=<n> quarantine=<n> ctx_built=<bool> dur=<seconds>s
@@ -688,6 +801,7 @@ iter=<N> ts=<ISO8601> unit=<unit> pass=<n> bug=<n> drop=<n> quarantine=<n> ctx_b
 
 Where:
 - `iter` = the cursor value at the start of this iteration
+- `bug` = bugs that SURVIVED Step 7.5 rubric verification (not the count sonnet reported)
 - `ctx_built` = `true` if Step 4 spawned the opus context builder this iteration, `false` if cached
 - `dur` = total iteration wall-clock (lock-acquire → here)
 
@@ -697,7 +811,24 @@ tail -n 50 target/.gear-tester/SESSION_NOTES.md > target/.gear-tester/SESSION_NO
 mv target/.gear-tester/SESSION_NOTES.md.tmp target/.gear-tester/SESSION_NOTES.md
 ```
 
-This file is THE handoff between iterations. The next wakeup reads only this file (plus `cursor` and `workspace_map.tsv`). No other state is consulted.
+**saturation.json** — update the entry for this iteration's unit:
+```
+sat = json.load(saturation.json or {})
+entry = sat.setdefault(unit, {"iters": 0, "bugs": 0, "consecutive_no_bugs": 0, "deprioritized": false})
+entry["iters"] += 1
+if (bugs > 0) or (quarantine > 0):
+    entry["bugs"] += bugs + quarantine
+    entry["consecutive_no_bugs"] = 0
+    entry["deprioritized"] = false   # any signal clears deprioritization
+else:
+    entry["consecutive_no_bugs"] += 1
+    threshold = 5 if --pr else 3
+    if entry["consecutive_no_bugs"] >= threshold:
+        entry["deprioritized"] = true
+json.dump(sat, saturation.json)
+```
+
+These two files are THE handoff between iterations. The next wakeup reads only these (plus `cursor` and `workspace_map.tsv`). No other state is consulted.
 
 #### Step 12: Release lock
 
@@ -726,7 +857,10 @@ Same hash → already tested or dropped → sonnet must skip. Dedup pool is the 
 - **PR branches always come off detected base**, never off the current branch. PRs contain only the test commit (and feature-gate Cargo.toml diff for quarantined bugs), not any in-flight work from the user's branch.
 - **PRs are always draft.** Never publish-ready. Human review required before merge.
 - **Compile errors never silently drop.** They always route through the opus-verifier, which decides test_wrong / context_wrong / api_gap.
-- **Bug rubric requires concrete evidence**, not "model intuition". `file:line` citation or numeric demonstration is mandatory; rubric (a) is verified by the orchestrator (Commit-3 feature).
+- **Bug rubric requires concrete evidence**, verified by the orchestrator. Rubric (a) citations are grep'd against the cited source file (and must land on a comment line); rubric (b)(d) require provided values; rubric (c) requires a panic message + signature reference. Every accepted bug additionally survives 3 reproducibility re-runs. Anything that fails verification is downgraded to dropped. See Step 7.5.
+- **`unimplemented!()` / `todo!()` / `unreachable!()` are bugs** when reachable from a `pub` API without `unsafe` or opt-in feature flags. Same observable effect as `panic!()` for the caller — implementation intent does not exempt the contract. See rubric (c) in Step 5.
+- **Saturation prevents wasted iterations.** Units with K consecutive no-bug iterations (K=3 without `--pr`, K=5 with) are deprioritized in the cursor advance until all units are deprioritized, then a fresh round begins. See Step 2.
+- **Opus context builder has a hard budget cap** (15 tool calls / 5 minutes). Heavy crates were costing $20–$30 per context build without a cap. Partial contexts with a `## partial-context-warning` section are acceptable.
 - **Per-target build sanity, not workspace.** One broken unrelated crate must not block testing of healthy ones.
 - **Workspace cd is mandatory.** Every cargo/forge invocation in a sub-agent's prompt is prefixed with the resolved `$CD_PREFIX` for the unit's workspace. Sub-agents that run cargo from the wrong directory get "package not found".
 - **Lib-presence pre-check is mandatory** for Rust units. Skip binary-only / WASM-only crates before spawning the opus context builder (saves $5–10 per skipped crate).
