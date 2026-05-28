@@ -13,7 +13,9 @@ Parse `$ARGUMENTS` as:
 
 - **`<target-description>`** (required, first positional) — free text. Examples: `all`, `all rust crates`, `all crates with prefix ethexe`, `crate ethexe-consensus`, `Mirror contract`, `demo-ping contract`.
 - **`--count N`** (default `3`) — tests to generate per iteration.
-- **`--loop INTERVAL`** (default: single run) — when set, schedules the next iteration via `ScheduleWakeup`. Accepts `Nm`, `Nh` (e.g. `15m`, `1h`).
+- **`--loop INTERVAL`** (default: single run) — when set, schedules the next iteration via `ScheduleWakeup`. Accepts `Nm`, `Nh` (e.g. `15m`, `1h`). The interval is measured **start-to-start**: `delaySeconds = max(60, INTERVAL_seconds − iteration_duration_seconds)`, so a 5-iteration that takes 4m schedules the next wakeup in 1m, and an iteration that overruns the interval re-fires at the 60s floor (no drift).
+- **`--time-budget DURATION`** (default: no budget) — soft total wall-clock budget for the entire loop. Accepts `Nm`, `Nh`, `Nd`. Checked at the START of each iteration (before lock acquisition); if `now − start_ts ≥ budget` the loop exits cleanly without scheduling another wakeup. No default — the loop only stops when you set a budget, write a stop marker (`/gear-dev:tester-stop`), close the session, or hit `--max-entries-per-unit` on every unit.
+- **`--max-entries-per-unit N`** (default: no cap) — optional per-unit ceiling on `ok + failed + dropped + compile_failed` entries. Units that hit the cap are excluded from the t-list permanently for the rest of the loop. With no flag, units can iterate indefinitely (saturation still deprioritizes them, but they can re-enter rotation after a global reset).
 - **`--pr`** (default off) — open **DRAFT** GitHub PRs for real bugs via `gh`.
 - **`--pr-min <severity>`** (default `medium`) — minimum severity for which `--pr` opens a PR. One of `info | low | medium | high | critical`. Bugs below the threshold are still recorded in `failed.jsonl` with their severity tier, but no PR is opened. Has no effect without `--pr`.
 
@@ -30,6 +32,8 @@ When `ScheduleWakeup` re-fires this skill, the orchestrator (the main Claude ses
 - `target/.gear-tester/SESSION_NOTES.md` (≤ 50 lines — rolling log of prior iterations)
 - `target/.gear-tester/workspace_map.tsv` (only if the next unit is a Rust crate — to resolve `$CD_PREFIX`)
 - `target/.gear-tester/saturation.json` (small dict — used by Step 2 to skip deprioritized units)
+- `target/.gear-tester/start_ts` (single integer — only if `--time-budget` is in effect)
+- `target/.gear-tester/stop` existence check (no read — just `[ -f ... ]`)
 
 **MUST NOT READ:**
 - `ok.jsonl`, `failed.jsonl`, `dropped.jsonl`, `compile_failed.jsonl` — these are large append-only logs consumed by **sonnet sub-agents** for hash dedup, not by the orchestrator. The orchestrator's only interactions with them are appends.
@@ -66,7 +70,9 @@ Files:
 | `skipped.jsonl` | Units skipped per iteration with reason |
 | `lock` | flock-based iteration lock |
 | `cursor` | Round-robin position in t-list |
-| `SESSION_NOTES.md` | Rolling log: one line per iteration. The ONLY file the orchestrator reads on wakeup (besides `cursor`, `workspace_map.tsv`, `saturation.json`). Rotates at 50 lines. |
+| `start_ts` | Unix timestamp written at first iteration of the loop. Used by `--time-budget` to compute elapsed wall-clock. Deleted on clean exit. |
+| `stop` | Stop marker. If present at the start of any iteration, the loop exits cleanly. Written by `/gear-dev:tester-stop`; deleted by the tester on exit. |
+| `SESSION_NOTES.md` | Rolling log: one line per iteration. The ONLY file the orchestrator reads on wakeup (besides `cursor`, `workspace_map.tsv`, `saturation.json`, `start_ts`, `stop`). Rotates at 50 lines. |
 | `saturation.json` | Per-unit counters used by the cursor advance to deprioritize crates with K=3 consecutive no-bug iterations. Map `{unit: {iters, bugs, consecutive_no_bugs, deprioritized}}`. |
 
 ## Workflow
@@ -151,6 +157,17 @@ Files:
    ```
    If `git check-ignore` exits non-zero → abort with: `target/.gear-tester is not gitignored. Add /target to .gitignore manually, or run in a repo where target/ is already gitignored.`
 
+8a. **Clear stale stop marker** (a previous loop may have crashed before deleting it):
+   ```bash
+   rm -f target/.gear-tester/stop
+   ```
+
+8b. **Initialize loop start_ts** (only if `--time-budget` set):
+   ```bash
+   date +%s > target/.gear-tester/start_ts
+   ```
+   This is the start-of-loop timestamp, not start-of-iteration. Used in Step 0 of every iteration to compute elapsed wall-clock.
+
 9. **Print startup summary:**
    ```
    /gear-dev:tester startup
@@ -159,21 +176,62 @@ Files:
      base branch:  <base-branch>
      gh user:      @<GH_USER>           (only if --pr)
      count:        <N> tests/iteration
-     loop:         <INTERVAL> | single
+     loop:         <INTERVAL> (start-to-start) | single
+     time-budget:  <DURATION> | none
+     max-entries:  <N>/unit | none
      pr mode:      on | off
      pr-min:       <severity>           (only if --pr; e.g. "medium")
-     loop ends when this Claude Code session closes
+     loop ends when: session closes | time-budget hits | /gear-dev:tester-stop is invoked | every unit at --max-entries (if set)
    ```
 
 ### Phase 2 — Loop control
 
 - **Without `--loop`:** run one iteration, exit.
 - **With `--loop X`:** at end of each iteration, call `ScheduleWakeup` with:
-  - `delaySeconds`: parse `X` to seconds (`15m` → 900, `1h` → 3600), clamped by ScheduleWakeup to [60, 3600]
+  - `delaySeconds`: `max(60, X_seconds − iteration_duration_seconds)`, clamped by ScheduleWakeup to [60, 3600]. This makes `--loop` a START-TO-START interval: an iteration that takes 4m on `--loop 5m` schedules the next wakeup in 1m; an iteration that overruns (6m on `--loop 5m`) schedules at the 60s floor (immediate next iteration, no drift).
   - `prompt`: the original `/gear-dev:tester ...` invocation verbatim
-  - `reason`: `next tester iteration in <X>`
+  - `reason`: `next tester iteration in <delaySeconds>s (started X ago)`
+
+  `iteration_duration_seconds` is measured from lock acquire (Step 1) to the moment ScheduleWakeup is called (Step 13).
 
 ### Phase 3 — Per-iteration
+
+**On wakeups, SKIP Phase 1 entirely.** All Phase 1 state (workspace map, tooling, base branch, start_ts) is already on disk. Go directly to Step 0 below. Only the very first invocation in a loop runs Phase 1.
+
+#### Step 0: Check exit conditions
+
+This step runs at the start of EVERY iteration (first invocation AND every wakeup), BEFORE acquiring the lock.
+
+**(a) Stop marker:**
+```bash
+if [ -f target/.gear-tester/stop ]; then
+  reason=$(cat target/.gear-tester/stop 2>/dev/null || echo "stop marker present")
+  echo "tester stopping: $reason"
+  rm -f target/.gear-tester/stop target/.gear-tester/start_ts
+  # Do NOT acquire lock. Do NOT schedule next wakeup. Exit silently.
+  exit 0
+fi
+```
+
+A stop marker is written by `/gear-dev:tester-stop`. If the marker is present, the iteration is aborted entirely and no next wakeup is scheduled. The marker is deleted on exit (so a future `/gear-dev:tester` invocation doesn't trip on it).
+
+The marker check happens BEFORE the lock so a stop request never has to wait on a long-running iteration.
+
+**(b) Time budget** (only if `--time-budget` is in this invocation's args):
+```bash
+if [ -n "$TIME_BUDGET_SECONDS" ] && [ -f target/.gear-tester/start_ts ]; then
+  start_ts=$(cat target/.gear-tester/start_ts)
+  now=$(date +%s)
+  elapsed=$((now - start_ts))
+  if [ "$elapsed" -ge "$TIME_BUDGET_SECONDS" ]; then
+    printf 'time budget exhausted: elapsed %ss, budget %ss\n' "$elapsed" "$TIME_BUDGET_SECONDS"
+    rm -f target/.gear-tester/start_ts
+    exit 0
+  fi
+fi
+```
+
+If the elapsed wall-clock has reached the budget, exit cleanly. Note: a currently-running iteration is NOT interrupted (we check at iteration start, not in the middle). If iteration N starts at elapsed=1h55m and takes 20m, total wall is 2h15m even with `--time-budget 2h` — the in-flight iteration always finishes. Set the budget with this overhead in mind.
 
 #### Step 1: Acquire lock
 
@@ -215,7 +273,9 @@ if no unit picked:
 write cursor_new
 ```
 
-Also still respect the hard per-unit cap: skip units where `ok.jsonl + failed.jsonl + dropped.jsonl + compile_failed.jsonl` already have ≥ 15 entries for this unit. If all units are at the hard cap → exit with `all units saturated; increase --count or extend scope`.
+**Optional per-unit cap** (only if `--max-entries-per-unit N` is set): skip units where `ok.jsonl + failed.jsonl + dropped.jsonl + compile_failed.jsonl` already have ≥ N entries for this unit. If all units are at the cap → exit cleanly with `all units at --max-entries-per-unit; loop done` (do NOT schedule next wakeup).
+
+Without `--max-entries-per-unit`, there is NO hard cap. Crates can iterate indefinitely; saturation (Step 2 deprioritization + global reset when all units deprioritized) is the only natural-rotation mechanism. The loop only stops when one of: `--time-budget` hits, `/gear-dev:tester-stop` is invoked, the session closes, or every unit reaches `--max-entries-per-unit` (if set).
 
 The saturation file itself is updated in Step 11 (after iteration outcomes are known).
 
@@ -396,9 +456,21 @@ For each accepted hypothesis, write a minimal test:
     Single function `function test_<hash>() public { … }`.
     Do not edit any other file.
 
-Run each test in isolation:
-- Rust:  eval "<CD_PREFIX> cargo nextest run -p <unit> --test auto_tester_<hash>"
-- Sol:   eval "<CD_PREFIX> forge test --match-path test/AutoTester_<Contract>_<hash>.t.sol"
+Run ALL N tests in ONE batched command (not N separate cargo invocations —
+each cargo invoke has 1–10s of planning/locking overhead; batching cuts
+~5× per iteration). FIRST write all N test files to disk, THEN run once:
+
+- Rust:
+    HASHES="<h1>|<h2>|<h3>|..."     # | separated list of this iteration's hashes
+    eval "<CD_PREFIX> cargo nextest run -p <unit> \\
+        -E 'test(/^auto_tester_(${HASHES})$/)' \\
+        --no-fail-fast"
+  Parse pass/fail per test from nextest's output. Old quarantined or
+  leftover auto_tester_* files are NOT matched by the regex (hash list is
+  this iteration only).
+- Sol:
+    eval "<CD_PREFIX> forge test --match-path 'test/AutoTester_<Contract>_*.t.sol' --no-fail-fast"
+  Then filter results to this iteration's hashes from the output.
 
 Classify each outcome:
 - PASSED        → outcome: "pass"
@@ -918,6 +990,8 @@ Same hash → already tested or dropped → sonnet must skip. Dedup pool is the 
 - **Bug rubric requires concrete evidence**, verified by the orchestrator. Rubric (a) citations are grep'd against the cited source file (and must land on a comment line); rubric (b)(d) require provided values; rubric (c) requires a panic message + signature reference. Every accepted bug additionally survives 3 reproducibility re-runs. Anything that fails verification is downgraded to dropped. See Step 7.5.
 - **`unimplemented!()` / `todo!()` / `unreachable!()` are bugs** when reachable from a `pub` API without `unsafe` or opt-in feature flags. Same observable effect as `panic!()` for the caller — implementation intent does not exempt the contract. See rubric (c) in Step 5.
 - **Saturation prevents wasted iterations.** Units with K consecutive no-bug iterations (K=3 without `--pr`, K=5 with) are deprioritized in the cursor advance until all units are deprioritized, then a fresh round begins. Only `medium+` bugs reset the counter — `low`/`info` accumulate quietly without reviving a saturated unit. See Step 2 and Step 11.
+- **No default per-unit cap.** Without `--max-entries-per-unit N` the loop can iterate a single crate indefinitely (saturation still deprioritizes it, but it re-enters rotation after a global reset). Use `--max-entries-per-unit` only when you want a hard ceiling.
+- **The loop exits cleanly via four mechanisms:** `--time-budget` hits the elapsed wall-clock, `/gear-dev:tester-stop` writes the marker (checked at Step 0), the Claude Code session closes, OR every unit has reached `--max-entries-per-unit` (if set). Nothing else stops it — no hard-coded iteration count, no default time limit, no implicit cap.
 - **Every bug has a `severity` tier.** Sonnet assigns `critical|high|medium|low|info` per the criteria in Step 5; the orchestrator's PR gate (`--pr-min`, default `medium`) only opens PRs at or above the threshold. Below-threshold bugs still land in `failed.jsonl` with their tier — no signal lost, only PR-noise filtered.
 - **Opus context builder has a hard budget cap** (15 tool calls / 5 minutes). Heavy crates were costing $20–$30 per context build without a cap. Partial contexts with a `## partial-context-warning` section are acceptable.
 - **Per-target build sanity, not workspace.** One broken unrelated crate must not block testing of healthy ones.
@@ -952,6 +1026,13 @@ Same hash → already tested or dropped → sonnet must skip. Dedup pool is the 
 - Push rejected (branch protection)
 - `gh pr create` rejected (rate limit, permissions)
 - Lock file present with live PID
+
+### Loop-exit conditions (clean, no error)
+
+- Stop marker present at Step 0 → exit, do not schedule next wakeup.
+- `--time-budget` elapsed at Step 0 → exit, do not schedule next wakeup.
+- All units at `--max-entries-per-unit` (if flag set) → exit, do not schedule next wakeup.
+- `ScheduleWakeup` itself fails (e.g., session in shutdown) → silent exit.
 
 ### Mid-iteration hard aborts (with diagnostic)
 

@@ -68,7 +68,7 @@ Print the bundled-MCP preflight diagnostic to the session. Use after install, or
 Autonomous black-box tester for Rust crates and Solidity contracts. Iteratively generates corner-case tests for a chosen unit, runs them, and classifies failures via an evidence-backed rubric. With `--pr`, opens **draft** GitHub PRs for real bugs into the detected base branch.
 
 ```
-/gear-dev:tester <target> [--count N=3] [--loop INTERVAL] [--pr]
+/gear-dev:tester <target> [--count N=3] [--loop INTERVAL] [--time-budget DURATION] [--max-entries-per-unit N] [--pr] [--pr-min SEVERITY]
 ```
 
 **Target description** is free text, resolved deterministically:
@@ -83,23 +83,39 @@ v1 supports **only** Rust crates and Solidity contracts. Other target types (fun
 **Flags:**
 
 - `--count N` — tests to generate per iteration (default 3).
-- `--loop INTERVAL` — re-schedule the next iteration via `ScheduleWakeup` (e.g. `15m`, `1h`). The loop runs only while the current Claude Code session is open.
+- `--loop INTERVAL` — re-schedule the next iteration via `ScheduleWakeup` (e.g. `15m`, `1h`). Interval is **start-to-start**: a fast iteration shortens the next wakeup, a slow one re-fires at the 60s floor (no drift). The loop runs only while the current Claude Code session is open.
+- `--time-budget DURATION` — soft total wall-clock budget for the entire loop (e.g. `2h`, `30m`). No default. Checked at the start of each iteration; in-flight iterations are not interrupted.
+- `--max-entries-per-unit N` — optional hard ceiling on per-unit entries (ok + failed + dropped + quarantine). No default — without the flag, units iterate indefinitely (saturation still deprioritizes).
 - `--pr` — open **draft** PRs for real bugs, authored as your `gh`-authenticated user against the detected base branch. The user is printed at startup as a consent moment.
+- `--pr-min SEVERITY` — only PR bugs at or above this tier (`info|low|medium|high|critical`, default `medium`). Below-threshold bugs still land in `failed.jsonl` with their tier; PR-noise is filtered. Has no effect without `--pr`.
 
-**State** lives under `target/.gear-tester/` (relies on existing `target/` gitignore — the command never modifies `.gitignore`). Files: `ok.jsonl`, `failed.jsonl`, `dropped.jsonl`, `skipped.jsonl`, `contexts/<unit>.md`, `lock`, `cursor`.
+**State** lives under `target/.gear-tester/` (relies on existing `target/` gitignore — the command never modifies `.gitignore`). Files: `ok.jsonl`, `failed.jsonl`, `dropped.jsonl`, `compile_failed.jsonl`, `skipped.jsonl`, `contexts/<unit>.md`, `lock`, `cursor`, `start_ts`, `stop`, `SESSION_NOTES.md`, `saturation.json`, `workspace_map.tsv`.
 
-**Bug classification** requires concrete evidence (cited invariant `file:line`, math identity violation, panic on admissible input, or non-determinism across 3 re-runs). Otherwise the test is dropped as "test wrong" — no auto-PR of speculative bugs.
+**Bug classification** requires concrete evidence (cited invariant `file:line`, math identity violation, panic on admissible input, or non-determinism across 3 re-runs). Orchestrator independently verifies citations (grep the quote in the cited source file) and re-runs each bug 3 times before recording it. Per-bug `severity` (`critical|high|medium|low|info`) controls whether `--pr` opens a PR — `low`/`info` findings stay in `failed.jsonl` without PR noise.
 
-**Architecture:** the main agent orchestrates; an `opus` sub-agent builds a per-unit context file once (lazy, cached); a `sonnet` sub-agent runs each iteration. This keeps the main context small across long loops.
+**Architecture:** the main agent orchestrates; an `opus` sub-agent builds a per-unit context file once (lazy, cached); a `sonnet` sub-agent runs each iteration; a second `opus` sub-agent verifies compile errors (drop / regenerate-context / quarantine behind a feature gate). Sub-agents return JSON only, write large artifacts to disk — this keeps the main context small across long loops.
+
+**Stopping the loop:** four mechanisms — `--time-budget` elapses, every unit reaches `--max-entries-per-unit` (if set), the session closes, or you invoke [`/gear-dev:tester-stop`](#gear-devtester-stop).
 
 **Examples:**
 
 ```
-/gear-dev:tester all rust crates --count 5 --loop 30m --pr
+/gear-dev:tester all rust crates --count 5 --loop 30m --pr --time-budget 4h
 /gear-dev:tester crate ethexe-consensus
-/gear-dev:tester crate ethexe-consensus --pr
+/gear-dev:tester crate ethexe-consensus --pr --pr-min high
 /gear-dev:tester Mirror contract --count 2
+/gear-dev:tester all crates with prefix ethexe --loop 5m --time-budget 8h --max-entries-per-unit 100 --pr
 ```
+
+#### `/gear-dev:tester-stop`
+
+Soft-stop a running `/gear-dev:tester` loop without ending the Claude Code session. Writes a marker file the loop checks at every iteration start; the next iteration exits cleanly without scheduling another wakeup. The currently-running iteration (if any) finishes — sub-agents are not interrupted.
+
+```
+/gear-dev:tester-stop [optional reason text]
+```
+
+Use when you want to stop iterating but keep working in the same session (e.g., you saw enough findings, you want to switch to triage, the loop is running on a saturated unit). State (cursor, jsonl files, contexts, draft PRs) is preserved — re-running `/gear-dev:tester ...` with the same args resumes from where you stopped.
 
 #### `/gear-dev:explain`
 
@@ -151,7 +167,8 @@ gear-skills/
         ├── commands/
         │   ├── doctor.md             # /gear-dev:doctor
         │   ├── explain.md            # /gear-dev:explain
-        │   └── tester.md             # /gear-dev:tester
+        │   ├── tester.md             # /gear-dev:tester
+        │   └── tester-stop.md        # /gear-dev:tester-stop
         └── scripts/
             └── preflight.sh          # MCP prereq + rust-analyzer warmth check
                                       #   (invoked by /gear-dev:doctor)
