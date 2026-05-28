@@ -15,6 +15,7 @@ Parse `$ARGUMENTS` as:
 - **`--count N`** (default `3`) — tests to generate per iteration.
 - **`--loop INTERVAL`** (default: single run) — when set, schedules the next iteration via `ScheduleWakeup`. Accepts `Nm`, `Nh` (e.g. `15m`, `1h`).
 - **`--pr`** (default off) — open **DRAFT** GitHub PRs for real bugs via `gh`.
+- **`--pr-min <severity>`** (default `medium`) — minimum severity for which `--pr` opens a PR. One of `info | low | medium | high | critical`. Bugs below the threshold are still recorded in `failed.jsonl` with their severity tier, but no PR is opened. Has no effect without `--pr`.
 
 If `$ARGUMENTS` is empty → ask the user what to test. Do not guess.
 
@@ -160,6 +161,7 @@ Files:
      count:        <N> tests/iteration
      loop:         <INTERVAL> | single
      pr mode:      on | off
+     pr-min:       <severity>           (only if --pr; e.g. "medium")
      loop ends when this Claude Code session closes
    ```
 
@@ -447,6 +449,41 @@ with concrete evidence cited inline:
 If NONE is satisfied with concrete evidence → outcome: "test_wrong" (drop).
 DO NOT retry.
 
+## Severity tier (for bugs only)
+
+For each REAL_BUG, assign a `severity` tier. Pick the strictest tier that
+honestly applies — when in doubt, downgrade. The orchestrator filters PR
+creation by `--pr-min` (default `medium`).
+
+- **`critical`** — Panic / abort / state corruption on input the caller
+  produces in DEFAULT usage (no extreme constants, no unusual flags). OR
+  consensus / state-machine invariant broken in a normal control flow.
+  Will hit users on their first integration, not on edge cases.
+
+- **`high`** — Panic / wrong result on inputs the public API documents as
+  valid AND a normal user would plausibly pass (e.g. an empty collection
+  on a method that doesn't say "non-empty", a zero-Duration on a
+  configuration option without a documented lower bound). Math identity
+  violations on inputs from the documented range.
+
+- **`medium`** — Bug on a clear edge case the API accepts (boundary
+  values like `u64::MAX`, deeply-nested structures, unicode in
+  surprising places) where a careful caller would notice. Non-determinism
+  on rarely-called code paths.
+
+- **`low`** — Bug on extreme constants only (`Duration::MAX`,
+  `usize::MAX`, billions of repetitions) where reaching the condition
+  requires constructing input no normal caller would. Documented "known
+  limitations" that still technically satisfy a rubric item.
+
+- **`info`** — Pedantic / cosmetic / matters only to library authors,
+  not callers. Example: `Debug` formatter inconsistency on
+  `Duration::ZERO`. The orchestrator records these for completeness but
+  they almost never warrant a PR.
+
+When in doubt between two tiers, pick the LOWER one. Critical and high
+should be reserved for bugs a reviewer would actually want to act on.
+
 ## Handling test files
 
 - For PASSED tests: LEAVE THE TEST FILE ON DISK. The orchestrator will
@@ -488,6 +525,8 @@ Output schema:
       "test_path": "<repo-root-relative path>",
       "summary": "<one-line>",
       "compile_stderr_first_line": "<only for compile_error>",
+      "severity": "info"|"low"|"medium"|"high"|"critical",   /* only for outcome=bug; see "Severity tier" above */
+      "severity_justification": "<one sentence — why this tier, not the one above or below>",   /* only for outcome=bug */
       "rubric_items": [   /* only for outcome=bug */
         {"id": "a"|"b"|"c"|"d",
          "evidence": "<concrete citation or values>",
@@ -699,34 +738,45 @@ For each test in sonnet's `tests` array:
 
 #### Step 9: Handle bugs
 
-For each test with `outcome: "bug"`:
+For each test with `outcome: "bug"` (after Step 7.5 verification):
 
-**WITHOUT `--pr`:**
+**Severity gating** — compute the routing first:
+```
+SEV_ORDER = {info: 0, low: 1, medium: 2, high: 3, critical: 4}
+should_pr = --pr is set AND SEV_ORDER[bug.severity] >= SEV_ORDER[--pr-min]
+```
+
+If `should_pr` is false → write to `failed.jsonl` only, no PR (same flow as no-`--pr` mode below).
+
+**WITHOUT a PR (either `--pr` not set, OR severity below `--pr-min`):**
 1. Read test source from `<test_path>` (orchestrator-side, NOT inline in sonnet's response).
 2. Append to `failed.jsonl`:
    ```json
    {"ts":"…","unit":"…","hash":"…","scenario":"…","summary":"…",
+    "severity":"<tier>","severity_justification":"…",
     "test_path":"…","test_source":"<full text from disk>",
-    "rubric_items":[…],"pr_url":null,"branch":null}
+    "rubric_items":[…],"pr_url":null,"branch":null,
+    "pr_skipped_reason":"<null | below_pr_min | pr_mode_off>"}
    ```
 3. (File is deleted in Step 10.)
 
-**WITH `--pr`** — process bugs sequentially. Working tree at this point contains untracked bug test files plus any Cargo.toml additions from Step 7.
+**WITH a PR (`should_pr` is true)** — process bugs sequentially. Working tree at this point contains untracked bug test files plus any Cargo.toml additions from Step 7.
 
 For each bug:
 
 1. Compute branch name: `auto-tester/<unit-slug>-<hash>` where `<unit-slug>` is the unit name with `/`, `.`, and ` ` replaced by `-` and lowercased.
 2. `git checkout -b <branch-name> <base-branch>` — switches to a new branch off the **detected base** (NOT the original branch). Untracked test files and uncommitted Cargo.toml changes follow.
 3. Stage: `git add <test_path>` plus the Cargo.toml diff IF this bug's hash also appears in `compile_failed.jsonl` (quarantined). For normal bugs, stage only the test file.
-4. `git commit -m "test: corner-case repro for <unit> (auto-tester) <hash>"`
+4. `git commit -m "test: [<severity>] corner-case repro for <unit> (auto-tester) <hash>"`
 5. `git push -u origin <branch-name>`
    - On failure (branch protection, network, rate limit): append `{ts, unit, reason: "push_failed: …"}` to `skipped.jsonl`, `git checkout <original-branch>`, `git stash drop` any stash, continue to next bug.
-6. `gh pr create --draft --base <base-branch> --head <branch-name> --title "test: <unit> corner-case (auto-tester) <hash>" --body "$(BODY)"`
+6. `gh pr create --draft --base <base-branch> --head <branch-name> --title "test: [<severity>] <unit> corner-case (auto-tester) <hash>" --body "$(BODY)"`
 
    where `BODY` is:
    ````
    <summary>
 
+   **Severity:** `<severity>` — <severity_justification>
    **Scenario:** `<scenario_type>`
    **Hash:** `<hash>`
    **Unit:** `<unit>`
@@ -754,8 +804,9 @@ For each bug:
 9. Append to `failed.jsonl`:
    ```json
    {"ts":"…","unit":"…","hash":"…","scenario":"…","summary":"…",
+    "severity":"<tier>","severity_justification":"…",
     "test_path":"…","test_source":"…","rubric_items":[…],
-    "pr_url":"<url>","branch":"<branch-name>"}
+    "pr_url":"<url>","branch":"<branch-name>","pr_skipped_reason":null}
    ```
 
 #### Step 10: Orchestrator-side cleanup
@@ -796,12 +847,13 @@ This step OWNS the working-tree-clean guarantee — it does not rely on sub-agen
 **SESSION_NOTES.md** — append ONE line in this exact format:
 
 ```
-iter=<N> ts=<ISO8601> unit=<unit> pass=<n> bug=<n> drop=<n> quarantine=<n> ctx_built=<bool> dur=<seconds>s
+iter=<N> ts=<ISO8601> unit=<unit> pass=<n> bug=<n>[crit=<n>,high=<n>,med=<n>,low=<n>,info=<n>] drop=<n> quarantine=<n> pr=<n> ctx_built=<bool> dur=<seconds>s
 ```
 
 Where:
 - `iter` = the cursor value at the start of this iteration
-- `bug` = bugs that SURVIVED Step 7.5 rubric verification (not the count sonnet reported)
+- `bug` = total bugs that SURVIVED Step 7.5 rubric verification (not the count sonnet reported); the bracketed breakdown lists per-severity counts
+- `pr` = number of PRs actually opened this iteration (≤ bug — counts those at or above `--pr-min`)
 - `ctx_built` = `true` if Step 4 spawned the opus context builder this iteration, `false` if cached
 - `dur` = total iteration wall-clock (lock-acquire → here)
 
@@ -816,10 +868,16 @@ mv target/.gear-tester/SESSION_NOTES.md.tmp target/.gear-tester/SESSION_NOTES.md
 sat = json.load(saturation.json or {})
 entry = sat.setdefault(unit, {"iters": 0, "bugs": 0, "consecutive_no_bugs": 0, "deprioritized": false})
 entry["iters"] += 1
-if (bugs > 0) or (quarantine > 0):
-    entry["bugs"] += bugs + quarantine
+
+# Only medium+ bugs and quarantines clear deprioritization. Low/info findings
+# accumulate quietly but don't reset the saturation counter — otherwise a unit
+# that produces an endless stream of `info`-severity nits would never deprioritize.
+signal = quarantine_count + sum(1 for b in bugs if SEV_ORDER[b.severity] >= SEV_ORDER["medium"])
+
+if signal > 0:
+    entry["bugs"] += signal
     entry["consecutive_no_bugs"] = 0
-    entry["deprioritized"] = false   # any signal clears deprioritization
+    entry["deprioritized"] = false
 else:
     entry["consecutive_no_bugs"] += 1
     threshold = 5 if --pr else 3
@@ -859,7 +917,8 @@ Same hash → already tested or dropped → sonnet must skip. Dedup pool is the 
 - **Compile errors never silently drop.** They always route through the opus-verifier, which decides test_wrong / context_wrong / api_gap.
 - **Bug rubric requires concrete evidence**, verified by the orchestrator. Rubric (a) citations are grep'd against the cited source file (and must land on a comment line); rubric (b)(d) require provided values; rubric (c) requires a panic message + signature reference. Every accepted bug additionally survives 3 reproducibility re-runs. Anything that fails verification is downgraded to dropped. See Step 7.5.
 - **`unimplemented!()` / `todo!()` / `unreachable!()` are bugs** when reachable from a `pub` API without `unsafe` or opt-in feature flags. Same observable effect as `panic!()` for the caller — implementation intent does not exempt the contract. See rubric (c) in Step 5.
-- **Saturation prevents wasted iterations.** Units with K consecutive no-bug iterations (K=3 without `--pr`, K=5 with) are deprioritized in the cursor advance until all units are deprioritized, then a fresh round begins. See Step 2.
+- **Saturation prevents wasted iterations.** Units with K consecutive no-bug iterations (K=3 without `--pr`, K=5 with) are deprioritized in the cursor advance until all units are deprioritized, then a fresh round begins. Only `medium+` bugs reset the counter — `low`/`info` accumulate quietly without reviving a saturated unit. See Step 2 and Step 11.
+- **Every bug has a `severity` tier.** Sonnet assigns `critical|high|medium|low|info` per the criteria in Step 5; the orchestrator's PR gate (`--pr-min`, default `medium`) only opens PRs at or above the threshold. Below-threshold bugs still land in `failed.jsonl` with their tier — no signal lost, only PR-noise filtered.
 - **Opus context builder has a hard budget cap** (15 tool calls / 5 minutes). Heavy crates were costing $20–$30 per context build without a cap. Partial contexts with a `## partial-context-warning` section are acceptable.
 - **Per-target build sanity, not workspace.** One broken unrelated crate must not block testing of healthy ones.
 - **Workspace cd is mandatory.** Every cargo/forge invocation in a sub-agent's prompt is prefixed with the resolved `$CD_PREFIX` for the unit's workspace. Sub-agents that run cargo from the wrong directory get "package not found".
