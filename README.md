@@ -117,6 +117,44 @@ Soft-stop a running `/gear-dev:tester` loop without ending the Claude Code sessi
 
 Use when you want to stop iterating but keep working in the same session (e.g., you saw enough findings, you want to switch to triage, the loop is running on a saturated unit). State (cursor, jsonl files, contexts, draft PRs) is preserved — re-running `/gear-dev:tester ...` with the same args resumes from where you stopped.
 
+#### `/gear-dev:doc`
+
+Generate or update **crate-level documentation** (`//!` doc comments in `lib.rs`/`main.rs`) for one or more Rust crates. Runs a write→verify→fix refinement loop with a multi-model verifier panel (opus + sonnet + optional codex), asks the user via `AskUserQuestion` only when the code genuinely cannot disambiguate intent, and optionally opens a draft PR.
+
+```
+/gear-dev:doc <crate-spec> [--refine N=3] [--verifiers opus:N,sonnet:M,codex:K] [--pr] [--scope crate-root|with-modules]
+```
+
+**Crate spec** (same conventions as `/gear-dev:tester`):
+
+- `crate <name>` — one workspace member
+- `all rust crates` — every member
+- `all crates with prefix <prefix>` — name filter
+
+**Flags:**
+
+- `--refine N` — write→verify→fix iterations after the initial draft. Default `3`. Loop exits early on verifier consensus (`approve` from all).
+- `--verifiers opus:N,sonnet:M,codex:K` — verifier panel composition. Default `opus:1,sonnet:1,codex:1`. `codex` is skipped silently if the CLI is not installed.
+- `--pr` — create a new branch and open a **draft** PR into the detected base branch (`master`/`main`/`develop`, auto-detected). Authored as the `gh`-authenticated user; the username is printed at startup as a consent moment.
+- `--scope crate-root|with-modules` — default `crate-root` (only `//!` in `lib.rs`/`main.rs`). `with-modules` extends to first-level module files.
+
+Pass any free text after the flags as additional per-crate direction (e.g. "focus on the public RPC surface").
+
+**State** lives under `target/.gear-doc/` — context files, drafts, verifier findings, summary. Preserved across runs for inspection. The skill does NOT touch `.gitignore`, `Cargo.toml`, `README.md`, `ARCHITECTURE.md`, or any non-Rust file.
+
+**Verification:** every backticked identifier in the final draft is grep-verified against actual source before writing. Hallucinated identifiers fail loud — the doc is dropped, not written with broken intra-doc links.
+
+**Style:** baseline rules are Rust API guidelines + RFC 1574. If `.gear-doc/style.md` exists in the workspace root, it overrides the baseline (use this to encode project-specific conventions).
+
+**Examples:**
+
+```
+/gear-dev:doc crate ethexe-service
+/gear-dev:doc all crates with prefix ethexe --refine 2 --pr
+/gear-dev:doc crate ethexe-runtime-common --verifiers opus:2,sonnet:1,codex:0
+/gear-dev:doc crate ethexe-service --scope with-modules focus on the validator state machine
+```
+
 #### `/gear-dev:explain`
 
 Explain a PR, issue, commit, diff, file, or pasted code. Produces a TL;DR plus a walkthrough of the most important / hardest spots, each with a permalink and inline commentary in the language you choose.
@@ -165,6 +203,7 @@ gear-skills/
         ├── .claude-plugin/
         │   └── plugin.json           # plugin manifest (includes mcpServers)
         ├── commands/
+        │   ├── doc.md                # /gear-dev:doc
         │   ├── doctor.md             # /gear-dev:doctor
         │   ├── explain.md            # /gear-dev:explain
         │   ├── tester.md             # /gear-dev:tester
