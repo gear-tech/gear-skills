@@ -38,7 +38,16 @@ If a prerequisite is missing, the diagnostic prints a one-line install command. 
 
 ```
 /plugin marketplace update gear-skills
+/plugin update gear-dev@gear-skills
 ```
+
+Then **restart Claude Code** — slash commands are cached at session start. If the update commands don't surface new files, the lowest-friction fallback is a direct `git pull` in the installed copy:
+
+```
+cd ~/.claude/plugins/marketplaces/gear-skills && git pull
+```
+
+Then restart.
 
 ## What's included
 
